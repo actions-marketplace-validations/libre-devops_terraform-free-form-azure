@@ -15,7 +15,7 @@ inputs:
     required: false
     default: 'examples'
     
-  terraform-arguements:
+  terraform-arguments:
     description: 'Terraform command line arguments to pass to terraform apply'
     required: true
     default: ''
