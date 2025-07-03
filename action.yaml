@@ -14,11 +14,16 @@ inputs:
     description: 'Path to Terraform code'
     required: false
     default: 'examples'
-    
-  terraform-arguments:
+
+  terraform-args-json:
+    description: 'JSON object mapping commands to their arguments'
+    required: false
+    default: '{}'
+
+  terraform-commands-json:
     description: 'Terraform command line arguments to pass to terraform apply'
     required: true
-    default: ''
+    default: '["init"]'
 
   use-azure-client-secret-login:
     description: 'Authenticate via client secret'
@@ -114,13 +119,64 @@ runs:
         allow-no-subscriptions: ${{ inputs.allow-no-subscriptions }}
 
     # ---------- Main script -------------------------------------------------
-    - name: Run Terraform ${{ inputs.terraform-arguements }}
+    - name: Validate and Execute Terraform Commands
       shell: pwsh
       env:
-        ARM_SUBSCRIPTION_ID:  ${{ inputs.target-subscription-id != '' && inputs.target-subscription-id || inputs.arm-subscription-id }}
-        ARM_USE_AZUREAD:      ${{ inputs.backend-use-azure-ad-auth }}
-        ARM_USE_OIDC:         ${{ inputs.use-azure-oidc-login }}
-        ARM_USE_MSI:          ${{ inputs.use-azure-managed-identity-login }}
-        ARM_CLIENT_SECRET:    ${{ inputs.arm-client-secret }}
+        ARM_SUBSCRIPTION_ID: ${{ inputs.target-subscription-id != '' && inputs.target-subscription-id || inputs.arm-subscription-id }}
+        ARM_USE_AZUREAD: ${{ inputs.backend-use-azure-ad-auth }}
+        ARM_USE_OIDC: ${{ inputs.use-azure-oidc-login }}
+        ARM_USE_MSI: ${{ inputs.use-azure-managed-identity-login }}
+        ARM_CLIENT_SECRET: ${{ inputs.arm-client-secret }}
       run: |
-        terraform ${{ inputs.terraform-arguments }}
+          # Function to validate terraform command
+          function Test-TerraformCommand {
+              param (
+                  [string]$Command
+              )
+              $validCommands = @(
+                  'init', 'plan', 'apply', 'destroy', 
+                  'validate', 'fmt', 'workspace', 'output',
+                  'show', 'state', 'refresh', 'force-unlock'
+              )
+              return $validCommands -contains $Command.ToLower()
+          }
+          
+          # Parse inputs
+          try {
+              $commands = ${{ inputs.terraform-commands-json }} | ConvertFrom-Json
+              $arguments = ${{ inputs.terraform-args-json }} | ConvertFrom-Json
+          } catch {
+              Write-Error "Failed to parse JSON input: $_"
+              exit 1
+          }
+          
+          # Validate commands
+          foreach ($cmd in $commands) {
+              if (-not (Test-TerraformCommand -Command $cmd)) {
+                  Write-Error "Invalid terraform command: $cmd"
+                  exit 1
+              }
+          }
+          
+          # Change to terraform directory
+          Set-Location ${{ inputs.terraform-code-location }}
+          
+          # Execute commands in sequence
+          foreach ($cmd in $commands) {
+              Write-Host "Executing: terraform $cmd"
+          
+              $cmdArgs = if ($arguments.$cmd) { $arguments.$cmd } else { "" }
+          
+              # Sanitize arguments (remove potentially dangerous characters)
+              $cmdArgs = $cmdArgs -replace '[;&|]', ''
+          
+              $expression = "terraform $cmd $cmdArgs"
+              Write-Host "Running: $expression"
+          
+              $result = Invoke-Expression $expression
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Error "Terraform command failed: $cmd"
+                  exit $LASTEXITCODE
+              }
+          }
+
